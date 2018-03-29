@@ -1,3 +1,5 @@
+with GNATCOLL.Traces;
+
 with Langkit_Support.Text; use Langkit_Support.Text;
 
 pragma Warnings (Off, "referenced");
@@ -149,27 +151,31 @@ package body Libadalang.Unit_Files is
      "  type Universal_Real_Type_ is digits 16;" & ASCII.LF &
      "end Standard;" & ASCII.LF;
 
+   function Name_To_Symbols
+     (Name : access Bare_Name_Type'Class) return Symbol_Type_Array;
+
    ---------------------
    -- Name_To_Symbols --
    ---------------------
 
-   function Name_To_Symbols 
-      (Name : access Bare_Name_Type'Class) return Symbol_Type_Array 
-   is
-     (case Name.Kind is
+   function Name_To_Symbols
+     (Name : access Bare_Name_Type'Class) return Symbol_Type_Array is
+   begin
+      case Name.Kind is
+         when Ada_Base_Id =>
+            return (1 => Get_Symbol (Bare_Identifier (Name)));
 
-      when Ada_Base_Id =>
-        (1 => Get_Symbol (Bare_Identifier (Name))),
+         when Ada_Dotted_Name =>
+            return Name_To_Symbols (Bare_Dotted_Name (Name).F_Prefix)
+                   & Name_To_Symbols (Bare_Dotted_Name (Name).F_Suffix);
 
-      when Ada_Dotted_Name =>
-        Name_To_Symbols (Bare_Dotted_Name (Name).F_Prefix)
-        & Name_To_Symbols (Bare_Dotted_Name (Name).F_Suffix),
+         when Ada_Defining_Name =>
+            return Name_To_Symbols (Bare_Defining_Name (Name).F_Name);
 
-      when Ada_Defining_Name =>
-        Name_To_Symbols (Bare_Defining_Name (Name).F_Name),
-
-      when others =>
-         raise Property_Error with "Wrong node in Name_To_Symbols");
+         when others =>
+            raise Property_Error with "Wrong node in Name_To_Symbols";
+      end case;
+   end Name_To_Symbols;
 
    ---------------
    -- To_String --
@@ -207,19 +213,31 @@ package body Libadalang.Unit_Files is
       Kind           : Unit_Kind;
       Load_If_Needed : Boolean) return Analysis_Unit
    is
-      procedure Prepare_Nameres (Unit : Analysis_Unit);
-      --  Prepare semantic analysis and reference Unit from the current unit
+      procedure Prepare_Nameres
+        (Unit : Analysis_Unit; Name : Symbol_Type_Array; Kind : Unit_Kind);
+      --  Prepare semantic analysis for the compilation unit corresponding to
+      --  the given Name/Kind in Unit, and reference Unit from the current
+      --  unit.
 
       ---------------------
       -- Prepare_Nameres --
       ---------------------
 
-      procedure Prepare_Nameres (Unit : Analysis_Unit) is
+      procedure Prepare_Nameres
+        (Unit : Analysis_Unit; Name : Symbol_Type_Array; Kind : Unit_Kind)
+      is
+         CU : constant Bare_Compilation_Unit := Find_CU (Unit, Name, Kind);
       begin
-         if not Is_Null (Root (Unit)) then
-            Populate_Lexical_Env (Unit);
-            Reference_Unit (From       => From_Unit,
-                            Referenced => Unit);
+         Reference_Unit (From => From_Unit, Referenced => Unit);
+
+         if CU = null then
+            GNATCOLL.Traces.Trace
+              (Main_Trace, "Cannot find " & Unit_Kind'Image (Kind) & " of "
+                           & Image (To_String (Name)) & " in "
+                           & Basename (Unit));
+
+         elsif Populate_Lexical_Env (CU) then
+            raise Property_Error;
          end if;
       end Prepare_Nameres;
 
@@ -256,7 +274,8 @@ package body Libadalang.Unit_Files is
                SP_FQN    : constant Symbol_Type_Array := Name & SP_Symbol;
             begin
                Prepare_Nameres
-                 (UFP.Get_Unit (Ctx, To_String (SP_FQN), Kind));
+                 (UFP.Get_Unit (Ctx, To_String (SP_FQN), Kind),
+                  SP_FQN, Kind);
             end;
          end loop;
       end if;
@@ -276,7 +295,7 @@ package body Libadalang.Unit_Files is
             --  TODO??? Find a proper way to handle file not found, parsing
             --  error, etc.
             Unit := UFP.Get_Unit (Ctx, To_String (Current_Name), I_Kind);
-            Prepare_Nameres (Unit);
+            Prepare_Nameres (Unit, Current_Name, I_Kind);
 
             --  The first iteration gives the unit we are required to return
             if First_Unit = No_Analysis_Unit then
@@ -297,5 +316,103 @@ package body Libadalang.Unit_Files is
    begin
       Populate_Lexical_Env (Std);
    end Fetch_Standard;
+
+   -------------
+   -- Find_CU --
+   -------------
+
+   function Find_CU
+     (Unit : Analysis_Unit; Name : Symbol_Type_Array; Kind : Unit_Kind)
+      return Bare_Compilation_Unit
+   is
+
+      function Matches (CU : Bare_Compilation_Unit) return Boolean;
+      --  Return whether the CU compilation unit matches the given Name/Kind
+
+      -------------
+      -- Matches --
+      -------------
+
+      function Matches (CU : Bare_Compilation_Unit) return Boolean is
+         CU_Body : Bare_Ada_Node;
+      begin
+         if CU = null or else CU.F_Body = null then
+            return False;
+         end if;
+
+         CU_Body := CU.F_Body;
+         case CU_Body.Kind is
+            when Ada_Subunit =>
+               declare
+                  FQN : Symbol_Type_Array_Access :=
+                     P_Fully_Qualified_Name (Bare_Subunit (CU_Body));
+                  Result : constant Boolean :=
+                     Kind = Unit_Body
+                     and then Symbol_Type_Array (FQN.Items) = Name;
+               begin
+                  Dec_Ref (FQN);
+                  return Result;
+               end;
+
+            when Ada_Library_Item =>
+               declare
+                  LI  : constant Bare_Basic_Decl :=
+                     Bare_Library_Item (CU_Body).F_Item;
+                  FQN : Symbol_Type_Array_Access :=
+                     P_Fully_Qualified_Name (LI);
+
+                  Result : constant Boolean :=
+                     (Kind /= Unit_Body or else LI.all in Bare_Body_Type'Class)
+                     and then Symbol_Type_Array (FQN.Items) = Name;
+               begin
+                  Dec_Ref (FQN);
+                  return Result;
+               end;
+
+            when others =>
+               return False;
+         end case;
+      end Matches;
+
+      R : constant Bare_Ada_Node := Bare_Node (Root (Unit));
+   begin
+      if R.Is_Null then
+         return null;
+      end if;
+
+      case R.Kind is
+         when Ada_Compilation_Unit =>
+            declare
+               CU : constant Bare_Compilation_Unit :=
+                  Bare_Compilation_Unit (R);
+            begin
+               if Matches (CU) then
+                  return CU;
+               end if;
+            end;
+
+         when Ada_Compilation_Unit_List =>
+            declare
+               CU_List : constant Bare_Compilation_Unit_List :=
+                  Bare_Compilation_Unit_List (R);
+            begin
+               for I in 1 .. CU_List.Abstract_Children_Count loop
+                  declare
+                     CU : constant Bare_Compilation_Unit :=
+                        Bare_Compilation_Unit (CU_List.Child (I));
+                  begin
+                     if Matches (CU) then
+                        return CU;
+                     end if;
+                  end;
+               end loop;
+            end;
+
+         when others =>
+            null;
+      end case;
+
+      return null;
+   end Find_CU;
 
 end Libadalang.Unit_Files;

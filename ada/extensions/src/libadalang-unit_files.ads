@@ -34,4 +34,10 @@ package Libadalang.Unit_Files is
    --  Create the "Standard" analysis unit in Context. This unit will be called
    --  "__standard".
 
+   function Find_CU
+     (Unit : Analysis_Unit; Name : Symbol_Type_Array; Kind : Unit_Kind)
+      return Bare_Compilation_Unit;
+   --  Find the compulation unit corresponding to the given Name/Kind in Unit.
+   --  Return null if not found.
+
 end Libadalang.Unit_Files;

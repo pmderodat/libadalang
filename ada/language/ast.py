@@ -6891,6 +6891,8 @@ class CompilationUnit(AdaNode):
         ))
     )
 
+    annotations = Annotations(ple_unit_root=True)
+
 
 class SubpBody(Body):
     env_spec = EnvSpec(
