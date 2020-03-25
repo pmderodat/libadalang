@@ -5534,7 +5534,6 @@ class UseTypeClause(UseClause):
         reference(
             Self.types.map(lambda n: n.cast(AdaNode)),
             T.Name.name_designated_type_env,
-            dest_env=Self.node_env,
             # We don't want to process use clauses that appear in the top-level
             # scope here, as they apply to the library item's environment,
             # which is not processed at this point yet. See CompilationUnit's
