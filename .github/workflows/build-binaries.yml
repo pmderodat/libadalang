@@ -7,6 +7,10 @@ name: Build binaries
 jobs:
   build:
     name: Build and deploy
+
+    # Do not run if there is no secret for the upload
+    if: github.repository = "AdaCore/libadalang"
+
     strategy:
       fail-fast: false
       matrix: # Build debug and production
